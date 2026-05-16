@@ -1,0 +1,11 @@
+data_cache/
+results/
+models/
+logs/
+figures/
+*.parquet
+*.pt
+*.pth
+*.zip
+*.json
+__pycache__/
