@@ -2,17 +2,6 @@
 make_v6_real_experiment_files.py
 
 Creates real standalone v6 experiment files from your successful base scripts.
-
-Run in Colab:
-    %cd /content/sac_model
-    !python v6_real_experiment_builder/make_v6_real_experiment_files.py
-
-Then run generated files:
-    !python v6_real_experiments/v6_core_fixed_entropy_40k.py
-    !python v6_real_experiments/v6_core_low_turnover.py
-    !python v6_real_experiments/v6_core_higher_exposure.py
-    !python v6_real_experiments/v6_core_safer_exposure.py
-    !python v6_real_experiments/v6_theme_fixed_entropy_40k.py
 """
 
 from pathlib import Path
@@ -38,7 +27,11 @@ def replace_assignment(text: str, var_name: str, value_code: str) -> str:
     if new_text != text:
         return new_text
 
-    m = re.search(r"^BASE_DIR\s*=.*$", text, flags=re.MULTILINE)
+    m = re.search(
+        r"^BASE_DIR\s*=.*$",
+        text,
+        flags=re.MULTILINE,
+    )
 
     if m:
         pos = m.end()
@@ -54,7 +47,12 @@ def patch_results_dir(text: str, exp_name: str) -> str:
         f'RESULTS_DIR = f"{{BASE_DIR}}/results/v6_real_experiments/{exp_name}"'
     )
 
-    text2 = re.sub(pattern, replacement, text, flags=re.MULTILINE)
+    text2 = re.sub(
+        pattern,
+        replacement,
+        text,
+        flags=re.MULTILINE,
+    )
 
     if text2 == text:
         text2 = replace_assignment(
@@ -67,7 +65,11 @@ def patch_results_dir(text: str, exp_name: str) -> str:
 
 
 def patch_universe_name(text: str, exp_name: str) -> str:
-    return replace_assignment(text, "UNIVERSE_NAME", repr(exp_name))
+    return replace_assignment(
+        text,
+        "UNIVERSE_NAME",
+        repr(exp_name),
+    )
 
 
 def patch_total_timesteps(text: str, timesteps: int) -> str:
@@ -202,23 +204,10 @@ def write_experiment(
     for fn in patches:
         text = fn(text)
 
-    header = f'''"""
-Generated real v6 experiment file.
-
-Base: {base_path}
-Experiment: {exp_name}
-
-Run:
-    %cd /content/sac_model
-    !python v6_real_experiments/{out_name}
-"""
-
-'''
-
     out_path = OUT_DIR / out_name
 
     out_path.write_text(
-        header + text,
+        text,
         encoding="utf-8",
     )
 
