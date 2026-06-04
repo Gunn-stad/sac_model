@@ -411,7 +411,7 @@ def make_paper_portfolio(panel, monthly_ret, mode="balanced_80_20", top_n=15, ma
     }).sort_values("target_weight", ascending=False)
 
     out["created_at"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-    out["model":] = "v13_defensive_momentum_bayesian"
+    out["model"] = "v13_defensive_momentum_bayesian"
     out.to_csv(os.path.join(PAPER_DIR, "v13_today_portfolio.csv"), index=False)
     return out
 
