@@ -216,9 +216,9 @@ def append_log(summary):
     if os.path.exists(LOG_PATH):
         old = pd.read_csv(LOG_PATH)
         combined = pd.concat([old, summary], ignore_index=True)
-        combined = combined.drop_duplicates(subset=["date", "strategy"], keep="last")
     else:
         combined = summary.copy()
+
 
     combined.to_csv(LOG_PATH, index=False)
 
