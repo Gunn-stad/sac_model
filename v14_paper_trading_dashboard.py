@@ -263,12 +263,12 @@ def plot_equity_curve():
         return
 
     log = pd.read_csv(LOG_PATH)
-    log["date"] = pd.to_datetime(log["date"])
+    log["timestamp"] = pd.to_datetime(log["timestamp"])
 
     plt.figure(figsize=(10, 5))
     for strategy, group in log.groupby("strategy"):
-        group = group.sort_values("date")
-        plt.plot(group["date"], group["current_value"], label=strategy)
+        group = group.sort_values("timestamp")
+        plt.plot(group["timestamp"], group["current_value"], label=strategy)
 
     plt.title("Paper Trading Dashboard: Portfolio Value")
     plt.xlabel("Date")
