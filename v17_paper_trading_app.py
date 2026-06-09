@@ -1,9 +1,15 @@
 import os
-from datetime import timedelta
-
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
+from streamlit_autorefresh import st_autorefresh
+
+# Refresh dashboard every 5 minutes
+st_autorefresh(
+    interval=5 * 60 * 1000,
+    key="dashboard_refresh"
+)
+
 
 DASH_DIR = "paper_dashboard"
 PAPER_DIR = "paper_trading"
