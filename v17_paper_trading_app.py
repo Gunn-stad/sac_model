@@ -1,4 +1,6 @@
 import os
+from datetime import timedelta
+
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
@@ -18,39 +20,99 @@ SAFE_ASSETS = {"IEF", "TLT", "BND", "GLD", "SHY", "SGOV", "BIL"}
 st.set_page_config(page_title="V17 Paper Trading App", layout="wide")
 st.title("📊 V17 Paper Trading App")
 
+
 def load_csv(path):
     return pd.read_csv(path) if os.path.exists(path) else None
 
+
 def pct(x):
-    return "N/A" if pd.isna(x) else f"{100*x:.2f}%"
+    return "N/A" if pd.isna(x) else f"{100 * x:.2f}%"
+
+
+def pct_from_percent(x):
+    return "N/A" if pd.isna(x) else f"{x:.2f}%"
+
 
 def money(x):
     return "N/A" if pd.isna(x) else f"${x:,.2f}"
 
+
+def prepare_history(df):
+    """
+    Prepare history for hourly charts.
+
+    Important:
+    - Use `timestamp` as plot_time, not `saved_timestamp`.
+    - `saved_timestamp` only tells us when the file was backed up to Drive.
+    - `timestamp` tells us when the portfolio value was measured.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    out = df.copy()
+
+    if "timestamp" not in out.columns:
+        st.warning("History file has no timestamp column.")
+        return out
+
+    out["plot_time"] = pd.to_datetime(out["timestamp"], utc=True, errors="coerce")
+    out = out.dropna(subset=["plot_time"])
+
+    if "return" in out.columns:
+        out["return"] = pd.to_numeric(out["return"], errors="coerce")
+
+    if "current_value" in out.columns:
+        out["current_value"] = pd.to_numeric(out["current_value"], errors="coerce")
+
+    if "initial_value" in out.columns:
+        out["initial_value"] = pd.to_numeric(out["initial_value"], errors="coerce")
+
+    if "num_positions" in out.columns:
+        out["num_positions"] = pd.to_numeric(out["num_positions"], errors="coerce")
+
+    out = out.sort_values(["plot_time", "strategy"])
+
+    return out
+
+
+def set_time_axis(ax, times):
+    times = pd.to_datetime(times, utc=True, errors="coerce").dropna()
+
+    if times.empty:
+        return
+
+    xmin = times.min()
+    xmax = times.max()
+
+    if xmin == xmax:
+        padding = timedelta(hours=1)
+    else:
+        padding = max((xmax - xmin) * 0.10, timedelta(hours=1))
+
+    ax.set_xlim(xmin - padding, xmax + padding)
+
+
 state = load_csv(STATE_PATH)
 log = load_csv(LOG_PATH)
 summary = load_csv(SUMMARY_PATH)
-history = load_csv(HISTORY_PATH)
+history_raw = load_csv(HISTORY_PATH)
 v13 = load_csv(V13_PATH)
 
 if state is None or log is None:
     st.error("Missing dashboard data. Run: python v14_paper_trading_dashboard.py --init 10000")
     st.stop()
 
-log["date"] = pd.to_datetime(log["date"])
+log = prepare_history(log)
+history = prepare_history(history_raw)
 
-if history is not None:
-    if "saved_timestamp" in history.columns:
-        history["plot_time"] = pd.to_datetime(history["saved_timestamp"])
-    else:
-        history["plot_time"] = pd.to_datetime(history["timestamp"])
-else:
+# If the Drive history is missing, fall back to the local daily/hourly log.
+if history.empty:
     history = log.copy()
-    history["plot_time"] = pd.to_datetime(history["timestamp"])
 
 state["gain_loss"] = state["last_value"] / state["entry_value"] - 1
 state["weight_now"] = state.groupby("strategy")["last_value"].transform(lambda x: x / x.sum())
-latest = log.sort_values("date").groupby("strategy").tail(1).copy()
+
+latest = log.sort_values("plot_time").groupby("strategy").tail(1).copy()
 
 page = st.sidebar.radio(
     "Choose page",
@@ -63,7 +125,12 @@ page = st.sidebar.radio(
     ],
 )
 
+
 def plot_equity_history():
+    if history.empty:
+        st.info("No portfolio history available yet.")
+        return
+
     fig, ax = plt.subplots(figsize=(13, 5))
 
     for strategy, group in history.groupby("strategy"):
@@ -80,10 +147,20 @@ def plot_equity_history():
     ax.set_xlabel("Time")
     ax.set_ylabel("Portfolio Value ($)")
     ax.legend()
-    ax.grid(True)
+    ax.grid(True, alpha=0.3)
+
+    # Prevent matplotlib from stretching a short experiment across years.
+    set_time_axis(ax, history["plot_time"])
+    fig.autofmt_xdate()
+
     st.pyplot(fig)
 
+
 def plot_returns_history():
+    if history.empty:
+        st.info("No return history available yet.")
+        return
+
     fig, ax = plt.subplots(figsize=(13, 4))
 
     for strategy, group in history.groupby("strategy"):
@@ -100,10 +177,19 @@ def plot_returns_history():
     ax.set_xlabel("Time")
     ax.set_ylabel("Return %")
     ax.legend()
-    ax.grid(True)
+    ax.grid(True, alpha=0.3)
+
+    set_time_axis(ax, history["plot_time"])
+    fig.autofmt_xdate()
+
     st.pyplot(fig)
 
+
 def plot_drawdown_history():
+    if history.empty:
+        st.info("No drawdown history available yet.")
+        return
+
     fig, ax = plt.subplots(figsize=(13, 4))
 
     for strategy, group in history.groupby("strategy"):
@@ -123,15 +209,84 @@ def plot_drawdown_history():
     ax.set_xlabel("Time")
     ax.set_ylabel("Drawdown %")
     ax.legend()
-    ax.grid(True)
+    ax.grid(True, alpha=0.3)
+
+    set_time_axis(ax, history["plot_time"])
+    fig.autofmt_xdate()
+
     st.pyplot(fig)
+
+
+def latest_alpha_table():
+    if history.empty:
+        return pd.DataFrame()
+
+    pivot = history.pivot_table(
+        index="plot_time",
+        columns="strategy",
+        values="return",
+        aggfunc="last",
+    ).sort_index()
+
+    rows = []
+
+    if "V12_champion" in pivot.columns and "SPY_benchmark_for_V12" in pivot.columns:
+        rows.append(
+            ("V12 alpha vs SPY", (pivot["V12_champion"] - pivot["SPY_benchmark_for_V12"]) * 100)
+        )
+
+    if "V13_defensive" in pivot.columns and "SPY_benchmark_for_V13" in pivot.columns:
+        rows.append(
+            ("V13 alpha vs SPY", (pivot["V13_defensive"] - pivot["SPY_benchmark_for_V13"]) * 100)
+        )
+
+    if not rows:
+        return pd.DataFrame()
+
+    out = pd.concat({name: series for name, series in rows}, axis=1)
+    return out.dropna(how="all")
+
+
+def plot_alpha_history():
+    alpha = latest_alpha_table()
+
+    if alpha.empty:
+        st.info("Not enough data to compute alpha vs SPY yet.")
+        return
+
+    fig, ax = plt.subplots(figsize=(13, 4))
+
+    for col in alpha.columns:
+        ax.plot(
+            alpha.index,
+            alpha[col],
+            marker="o",
+            linewidth=2,
+            label=col,
+        )
+
+    ax.axhline(0, linewidth=1)
+    ax.set_title("Alpha vs SPY History")
+    ax.set_xlabel("Time")
+    ax.set_ylabel("Alpha percentage points")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+    set_time_axis(ax, pd.Series(alpha.index))
+    fig.autofmt_xdate()
+
+    st.pyplot(fig)
+
 
 if page == "1. Live Performance":
     st.header("1. Live Performance")
 
-    cols = st.columns(len(latest))
-    for col, (_, row) in zip(cols, latest.iterrows()):
-        col.metric(row["strategy"], money(row["current_value"]), pct(row["return"]))
+    if latest.empty:
+        st.warning("No latest performance rows available.")
+    else:
+        cols = st.columns(len(latest))
+        for col, (_, row) in zip(cols, latest.iterrows()):
+            col.metric(row["strategy"], money(row["current_value"]), pct(row["return"]))
 
     st.subheader("Alpha vs SPY")
     latest_map = latest.set_index("strategy")
@@ -151,6 +306,9 @@ if page == "1. Live Performance":
     st.subheader("Return History")
     plot_returns_history()
 
+    st.subheader("Alpha vs SPY History")
+    plot_alpha_history()
+
     st.subheader("Drawdown History")
     plot_drawdown_history()
 
@@ -163,17 +321,19 @@ elif page == "2. Current Holdings":
 
     with c1:
         st.dataframe(
-            positions[[
-                "ticker",
-                "target_weight",
-                "weight_now",
-                "entry_price",
-                "last_price",
-                "shares",
-                "entry_value",
-                "last_value",
-                "gain_loss",
-            ]],
+            positions[
+                [
+                    "ticker",
+                    "target_weight",
+                    "weight_now",
+                    "entry_price",
+                    "last_price",
+                    "shares",
+                    "entry_value",
+                    "last_value",
+                    "gain_loss",
+                ]
+            ],
             use_container_width=True,
         )
 
@@ -252,7 +412,7 @@ elif page == "3. Sector Exposure":
         sector_exp.plot(kind="bar", ax=ax)
         ax.set_title("V13 Sector Exposure")
         ax.set_ylabel("Weight")
-        ax.grid(True)
+        ax.grid(True, alpha=0.3)
         st.pyplot(fig)
 
 elif page == "4. Leaderboard":
@@ -262,7 +422,7 @@ elif page == "4. Leaderboard":
     board["return_pct"] = board["return"] * 100
 
     st.dataframe(
-        board[["strategy", "current_value", "return_pct", "num_positions"]],
+        board[["plot_time", "strategy", "current_value", "return_pct", "num_positions"]],
         use_container_width=True,
     )
 
@@ -270,7 +430,8 @@ elif page == "4. Leaderboard":
     ax.bar(board["strategy"], board["return_pct"])
     ax.set_title("Strategy Return Leaderboard")
     ax.set_ylabel("Return %")
-    ax.grid(True)
+    ax.grid(True, alpha=0.3)
+    plt.xticks(rotation=20, ha="right")
     st.pyplot(fig)
 
     if summary is not None:
@@ -292,6 +453,14 @@ elif page == "5. Monthly / Hourly History":
     st.subheader("Return History")
     plot_returns_history()
 
+    st.subheader("Alpha vs SPY History")
+    plot_alpha_history()
+
+    alpha = latest_alpha_table()
+    if not alpha.empty:
+        st.subheader("Latest Alpha Table")
+        st.dataframe(alpha.tail(20), use_container_width=True)
+
     st.subheader("Drawdown History")
     plot_drawdown_history()
 
@@ -301,9 +470,9 @@ elif page == "5. Monthly / Hourly History":
         "portfolio_history.csv",
     )
 
-    st.subheader("Daily Log")
+    st.subheader("Daily / Hourly Log")
     st.dataframe(
-        log.sort_values(["date", "strategy"], ascending=[False, True]),
+        log.sort_values(["plot_time", "strategy"], ascending=[False, True]),
         use_container_width=True,
     )
 
