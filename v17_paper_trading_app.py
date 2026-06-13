@@ -6,7 +6,10 @@ import streamlit as st
 import matplotlib.pyplot as plt
 from streamlit_autorefresh import st_autorefresh
 
-# Refresh dashboard every 5 minutes
+# Streamlit page config must be the first Streamlit command.
+st.set_page_config(page_title="V17 Paper Trading App", layout="wide")
+
+# Refresh dashboard every 5 minutes. This reruns the app and reloads CSV files.
 st_autorefresh(
     interval=5 * 60 * 1000,
     key="dashboard_refresh"
@@ -25,7 +28,6 @@ V13_PATH = os.path.join(PAPER_DIR, "v13_today_portfolio.csv")
 
 SAFE_ASSETS = {"IEF", "TLT", "BND", "GLD", "SHY", "SGOV", "BIL"}
 
-st.set_page_config(page_title="V17 Paper Trading App", layout="wide")
 st.title("📊 V17 Paper Trading App")
 
 
@@ -83,21 +85,60 @@ def prepare_history(df):
     return out
 
 
-def set_time_axis(ax, times):
-    times = pd.to_datetime(times, utc=True, errors="coerce").dropna()
+def add_compressed_time_axis(df):
+    """
+    Compress overnight/weekend gaps by replacing real clock time on the x-axis
+    with an integer update number.
 
-    if times.empty:
+    The CSV still keeps the real timestamp. Only the chart x-axis is compressed.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    out = df.copy()
+
+    if "plot_time" not in out.columns:
+        out["plot_time"] = pd.to_datetime(out["timestamp"], utc=True, errors="coerce")
+
+    out = out.dropna(subset=["plot_time"]).sort_values(["plot_time", "strategy"])
+
+    unique_times = (
+        out[["plot_time"]]
+        .drop_duplicates()
+        .sort_values("plot_time")
+        .reset_index(drop=True)
+    )
+    unique_times["x_step"] = range(len(unique_times))
+
+    out = out.merge(unique_times, on="plot_time", how="left")
+    return out
+
+
+def format_compressed_x_axis(ax, df, max_ticks=14):
+    """Format compressed x-axis using the original timestamps as labels."""
+    if df is None or df.empty or "x_step" not in df.columns:
         return
 
-    xmin = times.min()
-    xmax = times.max()
+    tick_df = (
+        df[["x_step", "plot_time"]]
+        .drop_duplicates()
+        .sort_values("x_step")
+        .reset_index(drop=True)
+    )
 
-    if xmin == xmax:
-        padding = timedelta(hours=1)
-    else:
-        padding = max((xmax - xmin) * 0.10, timedelta(hours=1))
+    if tick_df.empty:
+        return
 
-    ax.set_xlim(xmin - padding, xmax + padding)
+    step = max(1, len(tick_df) // max_ticks)
+    tick_df = tick_df.iloc[::step].copy()
+
+    ax.set_xticks(tick_df["x_step"])
+    ax.set_xticklabels(
+        tick_df["plot_time"].dt.strftime("%m-%d %H:%M"),
+        rotation=45,
+        ha="right",
+    )
+    ax.set_xlim(df["x_step"].min() - 0.5, df["x_step"].max() + 0.5)
 
 
 state = load_csv(STATE_PATH)
@@ -139,12 +180,14 @@ def plot_equity_history():
         st.info("No portfolio history available yet.")
         return
 
+    plot_df = add_compressed_time_axis(history)
+
     fig, ax = plt.subplots(figsize=(13, 5))
 
-    for strategy, group in history.groupby("strategy"):
-        group = group.sort_values("plot_time")
+    for strategy, group in plot_df.groupby("strategy"):
+        group = group.sort_values("x_step")
         ax.plot(
-            group["plot_time"],
+            group["x_step"],
             group["current_value"],
             marker="o",
             linewidth=2,
@@ -152,14 +195,13 @@ def plot_equity_history():
         )
 
     ax.set_title("Portfolio Value History")
-    ax.set_xlabel("Time")
+    ax.set_xlabel("Update time")
     ax.set_ylabel("Portfolio Value ($)")
     ax.legend()
     ax.grid(True, alpha=0.3)
 
-    # Prevent matplotlib from stretching a short experiment across years.
-    set_time_axis(ax, history["plot_time"])
-    fig.autofmt_xdate()
+    format_compressed_x_axis(ax, plot_df)
+    fig.tight_layout()
 
     st.pyplot(fig)
 
@@ -169,12 +211,14 @@ def plot_returns_history():
         st.info("No return history available yet.")
         return
 
+    plot_df = add_compressed_time_axis(history)
+
     fig, ax = plt.subplots(figsize=(13, 4))
 
-    for strategy, group in history.groupby("strategy"):
-        group = group.sort_values("plot_time")
+    for strategy, group in plot_df.groupby("strategy"):
+        group = group.sort_values("x_step")
         ax.plot(
-            group["plot_time"],
+            group["x_step"],
             group["return"] * 100,
             marker="o",
             linewidth=2,
@@ -182,13 +226,13 @@ def plot_returns_history():
         )
 
     ax.set_title("Return History (%)")
-    ax.set_xlabel("Time")
+    ax.set_xlabel("Update time")
     ax.set_ylabel("Return %")
     ax.legend()
     ax.grid(True, alpha=0.3)
 
-    set_time_axis(ax, history["plot_time"])
-    fig.autofmt_xdate()
+    format_compressed_x_axis(ax, plot_df)
+    fig.tight_layout()
 
     st.pyplot(fig)
 
@@ -198,15 +242,17 @@ def plot_drawdown_history():
         st.info("No drawdown history available yet.")
         return
 
+    plot_df = add_compressed_time_axis(history)
+
     fig, ax = plt.subplots(figsize=(13, 4))
 
-    for strategy, group in history.groupby("strategy"):
-        g = group.sort_values("plot_time").copy()
+    for strategy, group in plot_df.groupby("strategy"):
+        g = group.sort_values("x_step").copy()
         g["peak"] = g["current_value"].cummax()
         g["drawdown"] = g["current_value"] / g["peak"] - 1
 
         ax.plot(
-            g["plot_time"],
+            g["x_step"],
             g["drawdown"] * 100,
             marker="o",
             linewidth=2,
@@ -214,13 +260,13 @@ def plot_drawdown_history():
         )
 
     ax.set_title("Drawdown History (%)")
-    ax.set_xlabel("Time")
+    ax.set_xlabel("Update time")
     ax.set_ylabel("Drawdown %")
     ax.legend()
     ax.grid(True, alpha=0.3)
 
-    set_time_axis(ax, history["plot_time"])
-    fig.autofmt_xdate()
+    format_compressed_x_axis(ax, plot_df)
+    fig.tight_layout()
 
     st.pyplot(fig)
 
@@ -262,26 +308,44 @@ def plot_alpha_history():
         st.info("Not enough data to compute alpha vs SPY yet.")
         return
 
+    alpha_df = (
+        alpha.reset_index()
+        .rename(columns={"index": "plot_time"})
+        .copy()
+    )
+    alpha_df["plot_time"] = pd.to_datetime(alpha_df["plot_time"], utc=True, errors="coerce")
+
+    long_alpha = alpha_df.melt(
+        id_vars=["plot_time"],
+        var_name="alpha_series",
+        value_name="alpha",
+    ).dropna(subset=["plot_time", "alpha"])
+
+    plot_df = add_compressed_time_axis(
+        long_alpha.rename(columns={"alpha_series": "strategy"})
+    )
+
     fig, ax = plt.subplots(figsize=(13, 4))
 
-    for col in alpha.columns:
+    for series_name, group in plot_df.groupby("strategy"):
+        group = group.sort_values("x_step")
         ax.plot(
-            alpha.index,
-            alpha[col],
+            group["x_step"],
+            group["alpha"],
             marker="o",
             linewidth=2,
-            label=col,
+            label=series_name,
         )
 
     ax.axhline(0, linewidth=1)
     ax.set_title("Alpha vs SPY History")
-    ax.set_xlabel("Time")
+    ax.set_xlabel("Update time")
     ax.set_ylabel("Alpha percentage points")
     ax.legend()
     ax.grid(True, alpha=0.3)
 
-    set_time_axis(ax, pd.Series(alpha.index))
-    fig.autofmt_xdate()
+    format_compressed_x_axis(ax, plot_df)
+    fig.tight_layout()
 
     st.pyplot(fig)
 
